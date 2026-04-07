@@ -13,16 +13,23 @@ const authMiddleware = async (req, res, next) => {
     }
 
     const token = authHeader.split(' ')[1];
-    
+
     try {
       const { data: { user }, error } = await supabase.auth.getUser(token);
 
       // Check if token is invalid or expired
       if (error || !user) {
         console.error('Token verification failed:', error?.message);
+
+        // Differentiate between expired and invalid tokens
+        const isExpired = error?.message?.includes('expired') ||
+          error?.message?.includes('JWT') ||
+          error?.message?.includes('token');
+
         return res.status(401).json({
           success: false,
-          message: 'Invalid or expired token. Please login again.',
+          message: isExpired ? 'Session expired' : 'Invalid token',
+          code: isExpired ? 'TOKEN_EXPIRED' : 'TOKEN_INVALID',
           error: error?.message
         });
       }
@@ -55,6 +62,16 @@ const authMiddleware = async (req, res, next) => {
 };
 
 
-module.exports = {
-  authMiddleware
+
+const adminMiddleware = (req, res, next) => {
+  // Check if the user has the 'admin' role OR matches your specific email
+  if (req.user.role !== 'admin' && req.user.email !== '23r01a05cu@cmrithyderabad.edu.in') {
+    return res.status(403).json({ 
+      success: false, 
+      message: 'Access Denied: Admins Only' 
+    });
+  }
+  next();
 };
+
+module.exports = { authMiddleware, adminMiddleware }; // Export both

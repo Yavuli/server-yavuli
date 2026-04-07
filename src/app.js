@@ -1,38 +1,45 @@
-require('dotenv').config();
+// require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
 const app = express();
 
-// Middleware
 const allowedOrigins = [
   'https://yavuli.netlify.app',
   'https://www.yavuli.netlify.app',
   'http://localhost:5173',
   'http://localhost:3000',
+  'http://localhost:3001',
   'http://192.168.1.7:3001',
-  "https://yavuli.app",
-  "https://www.yavuli.app"
+  'https://yavuli.app',
+  'https://www.yavuli.app'
 ];
 
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-
-    // Check if origin is allowed
-    const isAllowed = allowedOrigins.includes(origin) || allowedOrigins.includes(origin.replace(/\/$/, ""));
-
-    if (!isAllowed) {
-      console.log('Blocked by CORS:', origin); // Log blocked origins for debugging
-      return callback(null, false);
-    }
-    return callback(null, true);
-  },
-  credentials: true
+  origin: allowedOrigins, // Let the library handle the matching!
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true // ⚠️ CHANGE TO TRUE (Usually required for headers to pass correctly)
 }));
+
+// Security Headers to prevent Clickjacking and other attacks
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Request timeout protection
+app.use((req, res, next) => {
+  req.setTimeout(30000); // 30 seconds
+  res.setTimeout(30000);
+  next();
+});
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -85,6 +92,29 @@ app.get('/api/debug/routes', (req, res) => {
   res.json({
     message: 'Routes are registered',
     timestamp: new Date().toISOString()
+  });
+});
+
+// Handle 404s for undefined routes
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route not found',
+    path: req.path
+  });
+});
+
+// Global error handler (must be last middleware)
+app.use((err, req, res, next) => {
+  console.error('Error:', err.stack);
+
+  // Don't leak error details in production
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  res.status(err.status || 500).json({
+    success: false,
+    message: isDev ? err.message : 'Internal server error',
+    ...(isDev && { stack: err.stack })
   });
 });
 

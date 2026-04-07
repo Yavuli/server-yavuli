@@ -28,12 +28,15 @@
   "homepage": "https://github.com/Yavuli/server-yavuli#readme",
   "dependencies": {
     "@supabase/supabase-js": "^2.76.1",
+    "axios": "^1.13.5",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
-    "dotenv": "^17.2.3",
+    "dotenv": "^17.2.4",
     "express": "^5.1.0",
     "express-validator": "^7.3.0",
-    "razorpay": "^2.9.6"
+    "paytmchecksum": "^1.5.1",
+    "pdfkit": "^0.18.0",
+    "resend": "^6.9.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.0",

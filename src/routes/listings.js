@@ -14,6 +14,47 @@ const normalizeCondition = (condition) => {
   return VALID_CONDITIONS.includes(normalized) ? normalized : null;
 };
 
+// Simple Listing Cache to maximize response speeds
+let baseListingsCache = {
+  data: null,
+  lastUpdated: 0
+};
+const CACHE_TTL = 30000; // 30 seconds
+
+function invalidateListingsCache() {
+  baseListingsCache.data = null;
+  baseListingsCache.lastUpdated = 0;
+}
+
+async function getBaseListings() {
+  if (baseListingsCache.data && (Date.now() - baseListingsCache.lastUpdated) < CACHE_TTL) {
+    return baseListingsCache.data;
+  }
+
+  const { data, error } = await supabase
+    .from('listings')
+    .select(`
+      *,
+      seller:users!user_id (
+        is_verified,
+        full_name,
+        profile_image_url,
+        phone
+      )
+    `)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error("Base Listings Cache Query Error:", error);
+    throw error;
+  }
+
+  baseListingsCache.data = data;
+  baseListingsCache.lastUpdated = Date.now();
+  return data;
+}
+
 // POST - Create a new listing
 router.post('/', authMiddleware, async (req, res) => {
   try {
@@ -118,6 +159,13 @@ router.post('/', authMiddleware, async (req, res) => {
 
     console.log('Inserting listing with status:', dbStatus);
 
+
+    // Extra debug logging for the missing fields issue
+    console.log('--- DETAILS DEBUG CHECK ---');
+    console.log('Received Reason (why_selling):', reason, 'Type:', typeof reason);
+    console.log('Received Age (age_of_item):', age, 'Type:', typeof age);
+    console.log('Received Original Price (original_price):', originalPrice, 'Type:', typeof originalPrice);
+
     // Create the listing
     const { data: listing, error } = await supabase
       .from('listings')
@@ -128,12 +176,24 @@ router.post('/', authMiddleware, async (req, res) => {
         category,
         condition: normalizedCondition,
         price: parseFloat(price),
-        location: city,
+        original_price: originalPrice ? parseFloat(originalPrice) : null,
+        location_city: city,
         college_name: college,
+        why_selling: reason || null,
+        age_of_item: age || null,
         images: imageArray,
         status: dbStatus
       }])
       .select();
+
+    console.log('--- INSERTION DEBUG ---');
+    console.log('Using Service Role Key:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    if (error) {
+      console.error('Insert Error:', JSON.stringify(error, null, 2));
+    } else {
+      console.log('Insert Success. Returned Listing:', JSON.stringify(listing, null, 2));
+    }
 
     if (error) {
       console.error("Error creating listing:", error);
@@ -153,6 +213,9 @@ router.post('/', authMiddleware, async (req, res) => {
       data: listing[0]
     });
 
+    // Invalidate the cache to ensure the new listing is immediately visible
+    invalidateListingsCache();
+
   } catch (error) {
     console.error("Fatal error in create listing route:", error);
     res.status(500).json({
@@ -166,69 +229,55 @@ router.post('/', authMiddleware, async (req, res) => {
 // GET all listings with filters
 router.get('/', async (req, res) => {
   try {
-    const { category, minPrice, maxPrice, condition, verified, searchQuery } = req.query;
+    const { category, minPrice, maxPrice, condition, verified, searchQuery, limit } = req.query;
 
-    // Start building the query
-    // We include user verification status using a join
-    let query = supabase
-      .from('listings')
-      .select(`
-        *,
-        seller:users!user_id (
-          is_verified,
-          full_name,
-          profile_image_url,
-          phone
-        )
-      `)
-      .eq('status', 'active')
-      .order('created_at', { ascending: false });
+    // Fetch base listings from cache or database
+    let filteredData = await getBaseListings();
 
-    // Apply category filter
+    // Apply category filter in memory
     if (category && category !== '') {
-      query = query.eq('category', category);
+      filteredData = filteredData.filter(item => item.category === category);
     }
 
-    // Apply price range filters
+    // Apply price range filters in memory
     if (minPrice) {
-      query = query.gte('price', parseFloat(minPrice));
+      filteredData = filteredData.filter(item => item.price >= parseFloat(minPrice));
     }
     if (maxPrice) {
-      query = query.lte('price', parseFloat(maxPrice));
+      filteredData = filteredData.filter(item => item.price <= parseFloat(maxPrice));
     }
 
-    // Apply condition filter
+    // Apply condition filter in memory
     if (condition && condition !== '') {
-      query = query.eq('condition', condition);
+      filteredData = filteredData.filter(item => item.condition === condition);
     }
 
-    // Apply search query (simple title/description search)
-    if (searchQuery) {
-      query = query.or(`title.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error("Error fetching listings:", error);
-      return res.status(500).json({
-        success: false,
-        error: "Failed to fetch listings",
-        details: error.message
-      });
-    }
-
-    // Apply verification filter in memory (easier with Supabase joins for this case)
-    let filteredData = data;
+    // Apply verification filter in memory
     if (verified === 'true') {
-      filteredData = data.filter(listing => listing.seller?.is_verified === true);
+      filteredData = filteredData.filter(item => item.seller?.is_verified === true);
+    }
+
+    // Apply search query (simple title/description search) in memory
+    if (searchQuery) {
+      const lowerQuery = searchQuery.toLowerCase();
+      filteredData = filteredData.filter(item =>
+        (item.title && item.title.toLowerCase().includes(lowerQuery)) ||
+        (item.description && item.description.toLowerCase().includes(lowerQuery))
+      );
+    }
+
+    const originalCount = filteredData.length;
+
+    // Apply limit in memory
+    if (limit) {
+      filteredData = filteredData.slice(0, parseInt(limit, 10));
     }
 
     res.status(200).json({
       success: true,
       message: "Listings fetched successfully",
       count: filteredData.length,
-      originalCount: data.length,
+      originalCount: originalCount,
       data: filteredData
     });
 
@@ -380,6 +429,10 @@ router.delete('/:id', authMiddleware, async (req, res) => {
       success: true,
       message: 'Listing removed successfully'
     });
+
+    // Invalidate the cache since a listing was removed
+    invalidateListingsCache();
+
   } catch (error) {
     console.error('Error deleting listing:', error);
     res.status(500).json({
